@@ -1,7 +1,7 @@
 #ifndef ENCODERSTRESSTEST_H
 #define ENCODERSTRESSTEST_H
 
-#include <QZXing.h>
+#include "QZXing.h"
 #include <memory>
 #include <vector>
 #include <map>
@@ -52,7 +52,6 @@ private:
     size_t sumOfSuccessfullTests_;
     size_t totalExecutedTests_;
 
-    static QMutex mutex;
     static QMutex printLockMutex;
 };
 

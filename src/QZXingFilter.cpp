@@ -19,15 +19,29 @@ namespace {
         const int D = int(U) - 128;
         const int E = int(V) - 128;
         return gray(
-            qBound<uchar>(0, uchar((298 * C + 409 * E + 128) >> 8), 255),
-            qBound<uchar>(0, uchar((298 * C - 100 * D - 208 * E + 128) >> 8), 255),
-            qBound<uchar>(0, uchar((298 * C + 516 * D + 128) >> 8), 255)
+            qBound(0, ((298 * C + 409 * E + 128) >> 8), 255),
+            qBound(0, ((298 * C - 100 * D - 208 * E + 128) >> 8), 255),
+            qBound(0, ((298 * C + 516 * D + 128) >> 8), 255)
+        );
+    }
+
+    uchar yuvToGray2(uchar y, uchar u, uchar v)
+    {
+        double rD = y + 1.4075 * (v - 128);
+        double gD = y - 0.3455 * (u - 128) - (0.7169 * (v - 128));
+        double bD = y + 1.7790 * (u - 128);
+
+        return gray(
+            qBound<uchar>(0, (uchar)::floor(rD), 255),
+            qBound<uchar>(0, (uchar)::floor(gD), 255),
+            qBound<uchar>(0, (uchar)::floor(bD), 255)
         );
     }
 }
 
 QZXingFilter::QZXingFilter(QObject *parent)
     : QAbstractVideoFilter(parent)
+    , decoder(QZXing::DecoderFormat_QR_CODE)
     , decoding(false)
 {
     /// Connecting signals to handlers that will send signals to QML
@@ -89,7 +103,7 @@ QVideoFrame QZXingFilterRunnable::run(QVideoFrame * input, const QVideoSurfaceFo
     if(!input || !input->isValid())
     {
         //qDebug() << "[QZXingFilterRunnable] Invalid Input ";
-        return * input;
+        return QVideoFrame();
     }
     if(filter->isDecoding())
     {
@@ -189,6 +203,35 @@ static QImage* rgbDataToGrayscale(const uchar* data, const CaptureRect& captureR
     return image_ptr;
 }
 
+static void YUV_NV21_TO_RGB(uchar* argb, const uchar* yuv, int width, int height) {
+    int frameSize = width * height;
+
+    int ii = 0;
+    int ij = 0;
+    int di = +1;
+    int dj = +1;
+
+    int a = 0;
+    for (int i = 0, ci = ii; i < height; ++i, ci += di) {
+        for (int j = 0, cj = ij; j < width; ++j, cj += dj) {
+            int y = (0xff & ((int) yuv[ci * width + cj]));
+            int v = (0xff & ((int) yuv[frameSize + (ci >> 1) * width + (cj & ~1) + 0]));
+            int u = (0xff & ((int) yuv[frameSize + (ci >> 1) * width + (cj & ~1) + 1]));
+            y = y < 16 ? 16 : y;
+
+            int r = (int) (1.164f * (y - 16) + 1.596f * (v - 128));
+            int g = (int) (1.164f * (y - 16) - 0.813f * (v - 128) - 0.391f * (u - 128));
+            int b = (int) (1.164f * (y - 16) + 2.018f * (u - 128));
+
+            r = r < 0 ? 0 : (r > 255 ? 255 : r);
+            g = g < 0 ? 0 : (g > 255 ? 255 : g);
+            b = b < 0 ? 0 : (b > 255 ? 255 : b);
+
+            argb[a++] = 0xff000000 | (r << 16) | (g << 8) | b;
+        }
+    }
+}
+
 void QZXingFilterRunnable::processVideoFrameProbed(SimpleVideoFrame & videoFrame, const QRect& _captureRect)
 {
     if (videoFrame.data.length() < 1) {
@@ -232,6 +275,9 @@ void QZXingFilterRunnable::processVideoFrameProbed(SimpleVideoFrame & videoFrame
         image_ptr = rgbDataToGrayscale(data, captureRect, 3, 2, 1, 0, true);
         break;
     case QVideoFrame::Format_BGR32:
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 13, 0))
+    case QVideoFrame::Format_ABGR32:
+#endif
         image_ptr = rgbDataToGrayscale(data, captureRect, 3, 2, 1, 0);
         break;
     case QVideoFrame::Format_BGR24:
@@ -246,7 +292,7 @@ void QZXingFilterRunnable::processVideoFrameProbed(SimpleVideoFrame & videoFrame
         image_ptr = new QImage(data, width, height, QImage::Format_RGB16);
         break;
     case QVideoFrame::Format_YUV420P:
-        //fix for issues #4 and #9
+        /// Format_YUV420P format, encountered on raspberry pi
         image_ptr = new QImage(captureRect.targetWidth, captureRect.targetHeight, QImage::Format_Grayscale8);
         pixel = image_ptr->bits();
         wh = width * height;
@@ -267,45 +313,34 @@ void QZXingFilterRunnable::processVideoFrameProbed(SimpleVideoFrame & videoFrame
                 ++pixel;
             }
         }
+
         break;
     case QVideoFrame::Format_NV12:
         /// nv12 format, encountered on macOS
         image_ptr = new QImage(captureRect.targetWidth, captureRect.targetHeight, QImage::Format_Grayscale8);
-        pixel = image_ptr->bits();
-        wh = width * height;
-        w_2 = width / 2;
-        wh_54 = wh * 5 / 4;
-
-        for (int y = captureRect.startY; y < captureRect.endY; y++) {
-            const int Y_offset = y * width;
-            const int y_2 = y / 2;
-            const int U_offset = y_2 * w_2 + wh;
-            const int V_offset = y_2 * w_2 + wh_54;
-            for (int x = captureRect.startX; x < captureRect.endX; x++) {
-                const int x_2 = x / 2;
-                const uchar Y = data[Y_offset + x];
-                const uchar U = data[U_offset + x_2];
-                const uchar V = data[V_offset + x_2];
-                *pixel = yuvToGray(Y, U, V);
-                ++pixel;
-            }
-        }
+        YUV_NV21_TO_RGB((uchar*) image_ptr->bits(), (const uchar*) yuvPtr, width, height);
         break;
     case QVideoFrame::Format_YUYV:
         image_ptr = new QImage(captureRect.targetWidth, captureRect.targetHeight, QImage::Format_Grayscale8);
         pixel = image_ptr->bits();
 
         for (int y = captureRect.startY; y < captureRect.endY; y++){
-            const uint32_t *row = &yuvPtr[y*(width/2)-(width/4)];
-            for (int x = captureRect.startX; x < captureRect.endX; x++){
+            const uint32_t *row = &yuvPtr[y*(width/2)];
+            int end = captureRect.startX/2 + (captureRect.endX - captureRect.startX)/2;
+            for (int x = captureRect.startX/2; x < end; x++){
                 const uint8_t *pxl = reinterpret_cast<const uint8_t *>(&row[x]);
                 const uint8_t y0 = pxl[0];
                 const uint8_t u  = pxl[1];
                 const uint8_t v  = pxl[3];
-                *pixel = yuvToGray(y0, u, v);
+                const uint8_t y1 = pxl[2];
+
+                *pixel = yuvToGray2(y0, u, v);
+                ++pixel;
+                *pixel = yuvToGray2(y1, u, v);
                 ++pixel;
             }
         }
+
         break;
         /// TODO: Handle (create QImages from) YUV formats.
     default:

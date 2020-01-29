@@ -2,6 +2,7 @@
 #include <QDebug>
 #include <QUrlQuery>
 #include "QZXing.h"
+#include <QRegularExpression>
 
 QZXingImageProvider::QZXingImageProvider() : QQuickImageProvider(QQuickImageProvider::Image)
 {
@@ -27,8 +28,10 @@ QImage QZXingImageProvider::requestImage(const QString &id, QSize *size, const Q
     QString data;
     QZXing::EncoderFormat format = QZXing::EncoderFormat_QR_CODE;
     QZXing::EncodeErrorCorrectionLevel correctionLevel = QZXing::EncodeErrorCorrectionLevel_L;
+    bool border = false;
+    bool transparent = false;
 
-    int customSettingsIndex = id.lastIndexOf('?');
+    int customSettingsIndex = id.lastIndexOf(QRegularExpression("\\?(correctionLevel|format|border|transparent)="));
     if(customSettingsIndex >= 0)
     {
         int startOfDataIndex = slashIndex + 1;
@@ -38,14 +41,15 @@ QImage QZXingImageProvider::requestImage(const QString &id, QSize *size, const Q
         // it could not recognize the first key-value pair provided
         QUrlQuery optionQuery("options?dummy=&" + id.mid(customSettingsIndex + 1));
 
-        QString correctionLevelString = optionQuery.queryItemValue("corretionLevel");
-        QString formatString = optionQuery.queryItemValue("format");
-        if(formatString != "qrcode")
-        {
-            qWarning() << "Format not supported: " << formatString;
-            return QImage();
+        if (optionQuery.hasQueryItem("format")) {
+            QString formatString = optionQuery.queryItemValue("format");
+            if (formatString != "qrcode") {
+                qWarning() << "Format not supported: " << formatString;
+                return QImage();
+            }
         }
 
+        QString correctionLevelString = optionQuery.queryItemValue("correctionLevel");
         if(correctionLevelString == "H")
             correctionLevel = QZXing::EncodeErrorCorrectionLevel_H;
         else if(correctionLevelString == "Q")
@@ -54,12 +58,23 @@ QImage QZXingImageProvider::requestImage(const QString &id, QSize *size, const Q
             correctionLevel = QZXing::EncodeErrorCorrectionLevel_M;
         else if(correctionLevelString == "L")
             correctionLevel = QZXing::EncodeErrorCorrectionLevel_L;
-    } else
+
+        if (optionQuery.hasQueryItem("border"))
+            border = optionQuery.queryItemValue("border") == "true";
+
+        if (optionQuery.hasQueryItem("transparent"))
+            transparent = optionQuery.queryItemValue("transparent") == "true";
+    }
+    else
     {
         data = id.mid(slashIndex + 1);
     }
 
-    QImage result = QZXing::encodeData(data, format, requestedSize, correctionLevel);
+    QZXingEncoderConfig encoderConfig(format, requestedSize, correctionLevel, border, transparent);
+
+    QString dataTemp(QUrl::fromPercentEncoding(data.toUtf8()));
+
+    QImage result = QZXing::encodeData(dataTemp, encoderConfig);
     *size = result.size();
     return result;
 }
